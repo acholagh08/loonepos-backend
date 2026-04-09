@@ -1,11 +1,11 @@
-# ââ Stage 1: deps ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── Stage 1: deps ──────────────────────────────────────────────────────────────
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
 # better-sqlite3 needs native build tools
-RUN apk add --no-cache python3 make g++ && npm ci --omit=dev
+RUN apk add --no-cache python3 make g++ && npm install --omit=dev
 
-# ââ Stage 2: production image âââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── Stage 2: production image ───────────────────────────────────────────────────
 FROM node:20-alpine
 WORKDIR /app
 
