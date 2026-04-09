@@ -1,0 +1,25 @@
+version: '3.9'
+
+services:
+  loonepos-backend:
+    build: .
+    container_name: loonepos-backend
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      # Generate your own: node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: 8h
+      DB_PATH: /app/data/loonepos.db
+      CORS_ORIGINS: ${CORS_ORIGINS}
+    volumes:
+      # Persist the SQLite database file on the host
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
