@@ -104,6 +104,9 @@ function addColIfMissing(table, col, def) {
 addColIfMissing('products',  'store_id', "TEXT NOT NULL DEFAULT 'sylvania'");
 addColIfMissing('orders',    'store_id', "TEXT NOT NULL DEFAULT 'sylvania'");
 addColIfMissing('customers', 'store_id', "TEXT NOT NULL DEFAULT 'sylvania'");
+addColIfMissing('customers', 'notes', "TEXT DEFAULT ''");
+addColIfMissing('orders', 'voided_by_user_id', "TEXT");
+addColIfMissing('orders', 'voided_by_name', "TEXT");
 
 // receipt_settings: old schema used  id INTEGER PRIMARY KEY  (single row).
 // New schema uses  store_id TEXT PRIMARY KEY  (one row per store).
