@@ -28,8 +28,8 @@ router.get('/:id', (req, res) => {
   res.json(normalize(p));
 });
 
-/** POST /api/products  (Admin only) */
-router.post('/', requireAdmin, (req, res) => {
+/** POST /api/products */
+router.post('/', (req, res) => {
   const store = getStore(req);
   const { name, emoji, price, stock, category, saleType, imei } = req.body;
   if (!name || price === undefined || stock === undefined || !category || !saleType)
@@ -45,8 +45,8 @@ router.post('/', requireAdmin, (req, res) => {
   res.status(201).json(normalize(db.prepare('SELECT * FROM products WHERE id = ?').get(id)));
 });
 
-/** PUT /api/products/:id  (Admin only) */
-router.put('/:id', requireAdmin, (req, res) => {
+/** PUT /api/products/:id */
+router.put('/:id', (req, res) => {
   const store = getStore(req);
   const p = db.prepare('SELECT * FROM products WHERE id = ? AND store_id = ?').get(req.params.id, store);
   if (!p) return res.status(404).json({ error: 'Product not found' });
