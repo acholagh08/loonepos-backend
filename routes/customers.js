@@ -1,5 +1,5 @@
 const express = require('express');
-const router  = express.Router();
+const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const db = require('../db/database');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
@@ -37,7 +37,8 @@ router.get('/:id', (req, res) => {
      FROM orders o
      LEFT JOIN order_items oi ON oi.order_id = o.id
      WHERE o.customer_id = ?
-     GROUP BY o.id ORDER BY o.created_at DESC`
+     GROUP BY o.id
+     ORDER BY o.created_at DESC`
   ).all(req.params.id);
   res.json({ ...customer, orders });
 });
@@ -47,14 +48,11 @@ router.post('/', (req, res) => {
   const store = getStore(req);
   const { name, phone, email } = req.body;
   if (!name || !phone) return res.status(400).json({ error: 'name and phone are required' });
-
-  // Duplicate phone check — scoped to store
   const existing = db.prepare('SELECT id FROM customers WHERE phone = ? AND store_id = ?').get(phone.trim(), store);
   if (existing) {
     const cust = db.prepare('SELECT * FROM customers WHERE id = ?').get(existing.id);
     return res.status(200).json({ ...cust, existing: true });
   }
-
   const id = 'c-' + uuidv4().slice(0, 8);
   db.prepare(`INSERT INTO customers (id, store_id, name, phone, email) VALUES (?,?,?,?,?)`)
     .run(id, store, name.trim(), phone.trim(), email?.trim() || null);
@@ -66,13 +64,19 @@ router.put('/:id', (req, res) => {
   const store = getStore(req);
   const c = db.prepare('SELECT * FROM customers WHERE id = ? AND store_id = ?').get(req.params.id, store);
   if (!c) return res.status(404).json({ error: 'Customer not found' });
-  const { name, phone, email } = req.body;
-  db.prepare(`UPDATE customers SET name=?, phone=?, email=? WHERE id=?`)
-    .run(name ?? c.name, phone ?? c.phone, email !== undefined ? email : c.email, req.params.id);
+  const { name, phone, email, notes } = req.body;
+  db.prepare(`UPDATE customers SET name=?, phone=?, email=?, notes=? WHERE id=?`)
+    .run(
+      name ?? c.name,
+      phone ?? c.phone,
+      email !== undefined ? email : c.email,
+      notes !== undefined ? notes : c.notes,
+      req.params.id
+    );
   res.json(db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id));
 });
 
-/** DELETE /api/customers/:id  (Admin only) */
+/** DELETE /api/customers/:id (Admin only) */
 router.delete('/:id', requireAdmin, (req, res) => {
   const c = db.prepare('SELECT id FROM customers WHERE id = ? AND store_id = ?').get(req.params.id, getStore(req));
   if (!c) return res.status(404).json({ error: 'Customer not found' });
