@@ -1,19 +1,21 @@
 {
   "name": "loonepos-backend",
   "version": "1.0.0",
-  "description": "LoonePOS Backend API â Node.js + Express + SQLite",
+  "description": "LoonePOS Backend API — Node.js + Express + SQLite",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.600.0",
     "better-sqlite3": "^9.4.3",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.18.3",
     "jsonwebtoken": "^9.0.2",
+    "node-cron": "^3.0.3",
     "uuid": "^9.0.1"
   },
   "devDependencies": {
