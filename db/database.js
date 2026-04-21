@@ -10,8 +10,12 @@ const dir = path.dirname(resolvedPath);
 if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
 
 const db = new Database(resolvedPath);
+
+// ── Pragmas (safe defaults for production) ──────────────────────────────────
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+db.pragma('synchronous = NORMAL');   // WAL-safe, faster than FULL
+db.pragma('busy_timeout = 5000');
 
 // ──────────────────────────────────────────────
 // SCHEMA
@@ -89,6 +93,42 @@ db.exec(`
     tagline    TEXT DEFAULT '📱 Your trusted cell phone shop',
     logo       TEXT DEFAULT ''
   );
+
+  -- ── Data-safety infrastructure (Phase 0) ─────────────────────────────────
+  CREATE TABLE IF NOT EXISTS schema_versions (
+    version     INTEGER PRIMARY KEY,
+    description TEXT NOT NULL,
+    applied_at  TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS audit_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL DEFAULT (datetime('now')),
+    actor_id    TEXT,
+    actor_name  TEXT,
+    store_id    TEXT,
+    entity      TEXT NOT NULL,
+    entity_id   TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    before_json TEXT,
+    after_json  TEXT,
+    ip          TEXT,
+    user_agent  TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity, entity_id);
+  CREATE INDEX IF NOT EXISTS idx_audit_at     ON audit_log(at);
+  CREATE INDEX IF NOT EXISTS idx_audit_actor  ON audit_log(actor_id, at);
+
+  CREATE TABLE IF NOT EXISTS backup_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL DEFAULT (datetime('now')),
+    tier        TEXT NOT NULL,      -- 'r2' | 'b2' | 'local'
+    bytes       INTEGER,
+    ok          INTEGER NOT NULL,   -- 1 = success, 0 = failure
+    error       TEXT,
+    duration_ms INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_backup_runs_at ON backup_runs(at DESC);
 `);
 
 // ──────────────────────────────────────────────
@@ -107,6 +147,20 @@ addColIfMissing('customers', 'store_id', "TEXT NOT NULL DEFAULT 'sylvania'");
 addColIfMissing('customers', 'notes', "TEXT DEFAULT ''");
 addColIfMissing('orders', 'voided_by_user_id', "TEXT");
 addColIfMissing('orders', 'voided_by_name', "TEXT");
+
+// Phase 0 — soft-delete columns on all user-data tables.
+// Reads continue to work unchanged (deleted_at IS NULL filter is added in routes).
+addColIfMissing('customers', 'deleted_at', "TEXT");
+addColIfMissing('products',  'deleted_at', "TEXT");
+addColIfMissing('orders',    'deleted_at', "TEXT");
+addColIfMissing('users',     'deleted_at', "TEXT");
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_customers_deleted ON customers(deleted_at);
+  CREATE INDEX IF NOT EXISTS idx_products_deleted  ON products(deleted_at);
+  CREATE INDEX IF NOT EXISTS idx_orders_deleted    ON orders(deleted_at);
+  CREATE INDEX IF NOT EXISTS idx_users_deleted     ON users(deleted_at);
+`);
 
 // receipt_settings: old schema used  id INTEGER PRIMARY KEY  (single row).
 // New schema uses  store_id TEXT PRIMARY KEY  (one row per store).
@@ -135,6 +189,12 @@ if (!rsHasStoreId) {
   }
   console.log('[DB] Migrated receipt_settings to per-store schema');
 }
+
+// Record the Phase-0 migration so we have a record it was applied.
+const recordMigration = db.prepare(
+  `INSERT OR IGNORE INTO schema_versions (version, description) VALUES (?, ?)`
+);
+recordMigration.run(1, 'Phase 0: audit_log, backup_runs, schema_versions, soft-delete columns');
 
 // ──────────────────────────────────────────────
 // SEED  (only if tables are empty)
