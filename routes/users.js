@@ -3,18 +3,22 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../db/database');
+const { audit, softDelete } = require('../db/audit');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
 /**
  * GET /api/users
- * Returns all users (without pin hashes).
- * PUBLIC â no token needed. This is intentional: the login screen needs
+ * Returns all (non-deleted) users without pin hashes.
+ * PUBLIC — no token needed. This is intentional: the login screen needs
  * the user list (name, color, initials) before authentication can happen.
- * No sensitive data (PINs are hashed and never returned).
+ * No sensitive data is returned (PINs are hashed and never exposed).
  */
 router.get('/', (req, res) => {
   const users = db.prepare(
-    'SELECT id, name, role, color, initials, created_at FROM users ORDER BY name'
+    `SELECT id, name, role, color, initials, created_at
+     FROM users
+     WHERE deleted_at IS NULL
+     ORDER BY name`
   ).all();
   res.json(users);
 });
@@ -48,6 +52,8 @@ router.post('/', requireAdmin, (req, res) => {
   ).run(id, name.trim(), role, pin_hash, color || '#6c63ff', derivedInitials);
 
   const user = db.prepare('SELECT id, name, role, color, initials, created_at FROM users WHERE id = ?').get(id);
+  // Audit without the pin hash
+  audit(req, 'user', id, 'create', null, user);
   res.status(201).json(user);
 });
 
@@ -57,7 +63,7 @@ router.post('/', requireAdmin, (req, res) => {
  */
 router.put('/:id', requireAdmin, (req, res) => {
   const { id } = req.params;
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  const user = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const { name, role, pin, color, initials } = req.body;
@@ -82,11 +88,14 @@ router.put('/:id', requireAdmin, (req, res) => {
   ).run(updates.name, updates.role, updates.color, updates.initials, updates.pin_hash, id);
 
   const updated = db.prepare('SELECT id, name, role, color, initials, created_at FROM users WHERE id = ?').get(id);
+  // Strip pin_hash from before snapshot for audit
+  const { pin_hash: _before, ...beforeSafe } = user;
+  audit(req, 'user', id, 'update', beforeSafe, { ...updated, pin_changed: !!pin });
   res.json(updated);
 });
 
 /**
- * DELETE /api/users/:id   (Admin only)
+ * DELETE /api/users/:id   (Admin only — soft-delete)
  * Cannot delete yourself.
  */
 router.delete('/:id', requireAdmin, (req, res) => {
@@ -94,10 +103,10 @@ router.delete('/:id', requireAdmin, (req, res) => {
   if (id === req.user.id) {
     return res.status(400).json({ error: 'You cannot delete your own account' });
   }
-  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(id);
+  const user = db.prepare('SELECT id FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  softDelete(req, 'users', id);
   res.json({ ok: true });
 });
 
