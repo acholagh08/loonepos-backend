@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db/database');
+const { audit } = require('../db/audit');
 const { requireAuth, requireManager } = require('../middleware/auth');
 
 router.use(requireAuth);
@@ -44,7 +45,7 @@ function withItems(order) {
 
 function buildFilters(query, store) {
   const { q, from, to, status, userId } = query;
-  const clauses = ['o.store_id = ?'];
+  const clauses = ['o.store_id = ?', 'o.deleted_at IS NULL'];
   const params = [store];
   if (q) {
     clauses.push(`(o.id LIKE ? OR LOWER(o.customer_name) LIKE ? OR LOWER(o.customer_phone) LIKE ? OR LOWER(o.user_name) LIKE ?)`);
@@ -71,7 +72,7 @@ router.get('/', (req, res) => {
 
 /** GET /api/orders/:id */
 router.get('/:id', (req, res) => {
-  const o = db.prepare('SELECT * FROM orders WHERE id = ? AND store_id = ?').get(req.params.id, getStore(req));
+  const o = db.prepare('SELECT * FROM orders WHERE id = ? AND store_id = ? AND deleted_at IS NULL').get(req.params.id, getStore(req));
   if (!o) return res.status(404).json({ error: 'Order not found' });
   res.json(withItems(o));
 });
@@ -105,7 +106,10 @@ router.post('/', (req, res) => {
 
   try {
     transaction();
-    res.status(201).json(withItems(db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId)));
+    const created = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+    const full = withItems(created);
+    audit(req, 'order', orderId, 'create', null, { id: orderId, total: Number(total), items: full.items });
+    res.status(201).json(full);
   } catch (err) {
     console.error('[orders] POST error:', err);
     res.status(500).json({ error: 'Failed to create order' });
@@ -115,7 +119,7 @@ router.post('/', (req, res) => {
 /** PUT /api/orders/:id (Manager/Admin) */
 router.put('/:id', requireManager, (req, res) => {
   const store = getStore(req);
-  const o = db.prepare('SELECT * FROM orders WHERE id = ? AND store_id = ?').get(req.params.id, store);
+  const o = db.prepare('SELECT * FROM orders WHERE id = ? AND store_id = ? AND deleted_at IS NULL').get(req.params.id, store);
   if (!o) return res.status(404).json({ error: 'Order not found' });
   if (o.status === 'voided') return res.status(400).json({ error: 'Cannot edit a voided order' });
 
@@ -130,13 +134,15 @@ router.put('/:id', requireManager, (req, res) => {
   }
   db.prepare(`UPDATE orders SET customer_name=?, customer_phone=?, discount=?, total=?, user_id=?, user_name=? WHERE id=?`)
     .run(customerName ?? o.customer_name, customerPhone ?? o.customer_phone, newDiscount, newTotal, resolvedUserId, resolvedUserName, req.params.id);
-  res.json(withItems(db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id)));
+  const after = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+  audit(req, 'order', req.params.id, 'update', o, after);
+  res.json(withItems(after));
 });
 
 /** POST /api/orders/:id/void (any authenticated user) */
 router.post('/:id/void', (req, res) => {
   const store = getStore(req);
-  const o = db.prepare('SELECT * FROM orders WHERE id = ? AND store_id = ?').get(req.params.id, store);
+  const o = db.prepare('SELECT * FROM orders WHERE id = ? AND store_id = ? AND deleted_at IS NULL').get(req.params.id, store);
   if (!o) return res.status(404).json({ error: 'Order not found' });
   if (o.status === 'voided') return res.status(400).json({ error: 'Order already voided' });
 
@@ -153,7 +159,12 @@ router.post('/:id/void', (req, res) => {
     }
   })();
 
-  res.json(withItems(db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id)));
+  const after = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+  audit(req, 'order', req.params.id, 'void',
+    { status: o.status, total: o.total },
+    { status: 'voided', voided_by: voiderName, voided_by_user_id: voiderId }
+  );
+  res.json(withItems(after));
 });
 
 module.exports = router;
