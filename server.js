@@ -4,7 +4,7 @@ const cors    = require('cors');
 
 const app = express();
 
-// ââ CORS ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ── CORS ─────────────────────────────────────────────────────────────────────
 const allowedOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map(o => o.trim())
@@ -22,11 +22,11 @@ app.use(cors({
   credentials: true,
 }));
 
-// ââ Body parsing âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ── Body parsing ─────────────────────────────────────────────────────────────
 app.use(express.json({ limit: '5mb' }));   // 5 MB to allow base64 logo uploads
 app.use(express.urlencoded({ extended: true }));
 
-// ââ Request logger (dev) ââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ── Request logger (dev) ─────────────────────────────────────────────────────
 app.use((req, _res, next) => {
   if (process.env.NODE_ENV !== 'production') {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
@@ -34,10 +34,31 @@ app.use((req, _res, next) => {
   next();
 });
 
-// ââ Health check âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ── Health checks ────────────────────────────────────────────────────────────
+const { backupHealth, runBackup, isConfigured } = require('./db/backup');
+const { requireAuth, requireAdmin } = require('./middleware/auth');
+
 app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.0.0' }));
 
-// ââ API Routes ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// Returns 200 if most recent successful backup was within 26 hours, 500 otherwise.
+// Point UptimeRobot at this URL to get paged when nightly backups fail.
+app.get('/health/backups', (_req, res) => {
+  const h = backupHealth();
+  if (!h.healthy) return res.status(500).json(h);
+  res.json(h);
+});
+
+// Admin-only: run a backup right now. Useful to prove the pipeline works
+// after first deploy without waiting for 02:00.
+app.post('/api/admin/backup/run', requireAuth, requireAdmin, async (_req, res) => {
+  if (!isConfigured()) {
+    return res.status(412).json({ error: 'Backup not configured — env vars missing' });
+  }
+  const result = await runBackup();
+  res.status(result.ok ? 200 : 500).json(result);
+});
+
+// ── API Routes ───────────────────────────────────────────────────────────────
 app.use('/api/auth',      require('./routes/auth'));
 app.use('/api/users',     require('./routes/users'));
 app.use('/api/products',  require('./routes/products'));
@@ -46,10 +67,10 @@ app.use('/api/orders',    require('./routes/orders'));
 app.use('/api/reports',   require('./routes/reports'));
 app.use('/api/settings',  require('./routes/settings'));
 
-// ââ 404 handler âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ── 404 handler ──────────────────────────────────────────────────────────────
 app.use((req, res) => res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` }));
 
-// ââ Global error handler ââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ── Global error handler ─────────────────────────────────────────────────────
 app.use((err, req, res, _next) => {
   console.error('[ERROR]', err.message);
   if (err.message?.startsWith('CORS')) {
@@ -58,16 +79,14 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// ââ Start âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ── Start ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`\n  âââ      âââââââ  âââââââ ââââ   âââââââââââ âââââââ  âââââââ ââââââââ`);
-  console.log(`  âââ     âââââââââââââââââââââââ  âââââââââââ âââââââââââââââââââââââââ`);
-  console.log(`  âââ     âââ   ââââââ   âââââââââ âââââââââ   âââââââââââ   âââââââââââ`);
-  console.log(`  âââ     âââ   ââââââ   âââââââââââââââââââ   âââââââ âââ   âââââââââââ`);
-  console.log(`  âââââââââââââââââââââââââââââ ââââââââââââââ âââ     âââââââââââââââââ`);
-  console.log(`  ââââââââ âââââââ  âââââââ âââ  âââââââââââââ âââ      âââââââ ââââââââ\n`);
-  console.log(`  ð  LoonePOS Backend running on http://localhost:${PORT}`);
-  console.log(`  ð¦  Database:  ${process.env.DB_PATH || './data/loonepos.db'}`);
-  console.log(`  ð  CORS:      ${allowedOrigins.length ? allowedOrigins.join(', ') : 'all origins (open)'}\n`);
+  console.log(`\n  LoonePOS Backend running on http://localhost:${PORT}`);
+  console.log(`  Database:  ${process.env.DB_PATH || './data/loonepos.db'}`);
+  console.log(`  CORS:      ${allowedOrigins.length ? allowedOrigins.join(', ') : 'all origins (open)'}\n`);
+
+  // Schedule nightly R2 backup (no-op when env vars absent).
+  const { scheduleBackups } = require('./db/backup');
+  scheduleBackups();
 });
