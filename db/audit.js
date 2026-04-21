@@ -24,16 +24,6 @@ function getStoreId(req) {
   return ['sylvania', 'holland'].includes(s) ? s : 'sylvania';
 }
 
-/**
- * Record a mutation in the audit log.
- *
- * @param {object|null} req  Express request (for actor + IP + UA). Null for system jobs.
- * @param {string} entity    'customer' | 'product' | 'order' | 'user' | ...
- * @param {string|number} entityId
- * @param {string} action    'create' | 'update' | 'delete' | 'restore' | 'void' | ...
- * @param {object|null} before  Snapshot before the change (null on create).
- * @param {object|null} after   Snapshot after the change (null on delete).
- */
 function audit(req, entity, entityId, action, before, after) {
   try {
     insertAudit.run(
@@ -49,24 +39,17 @@ function audit(req, entity, entityId, action, before, after) {
       req?.headers?.['user-agent']?.slice(0, 500) || null
     );
   } catch (err) {
-    // Never let an audit failure break the user's action.
     console.error('[audit] failed to write:', err.message);
   }
 }
 
-/**
- * Soft-delete: mark a row as deleted without removing it. Reads filter on
- * `deleted_at IS NULL`, so the row disappears from normal queries but can be
- * restored via the admin trash UI (coming in Phase 0.2).
- *
- * Returns the row that was soft-deleted (for audit snapshotting).
- *
- * @param {object} req
- * @param {string} table  Must be in the allowed list below.
- * @param {string} id
- * @param {string} [idCol='id']
- */
-const SOFT_DELETABLE_TABLES = new Set(['customers', 'products', 'orders', 'users']);
+// Allowlist of tables that support soft-delete.
+// Phase 0: customers, products, orders, users
+// Phase 1.1: vendors, purchase_orders
+const SOFT_DELETABLE_TABLES = new Set([
+  'customers', 'products', 'orders', 'users',
+  'vendors', 'purchase_orders',
+]);
 
 function softDelete(req, table, id, idCol = 'id') {
   if (!SOFT_DELETABLE_TABLES.has(table)) {
@@ -79,9 +62,6 @@ function softDelete(req, table, id, idCol = 'id') {
   return row;
 }
 
-/**
- * Restore a soft-deleted row. Used by the (forthcoming) Trash admin UI.
- */
 function restoreSoftDeleted(req, table, id, idCol = 'id') {
   if (!SOFT_DELETABLE_TABLES.has(table)) {
     throw new Error(`restoreSoftDeleted: table "${table}" is not in the allowlist`);
@@ -94,9 +74,6 @@ function restoreSoftDeleted(req, table, id, idCol = 'id') {
   return after;
 }
 
-/**
- * List soft-deleted rows, newest first, limited to the last N days.
- */
 function getSoftDeleted(table, { days = 90, limit = 500 } = {}) {
   if (!SOFT_DELETABLE_TABLES.has(table)) {
     throw new Error(`getSoftDeleted: table "${table}" is not in the allowlist`);
@@ -111,6 +88,8 @@ function getSoftDeleted(table, { days = 90, limit = 500 } = {}) {
 }
 
 function singular(table) {
+  const special = { 'purchase_orders': 'purchase_order' };
+  if (special[table]) return special[table];
   if (table.endsWith('s')) return table.slice(0, -1);
   return table;
 }
