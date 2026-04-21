@@ -11,15 +11,13 @@ if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
 
 const db = new Database(resolvedPath);
 
-// ── Pragmas (safe defaults for production) ──────────────────────────────────
+// Pragmas (safe defaults for production)
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
-db.pragma('synchronous = NORMAL');   // WAL-safe, faster than FULL
+db.pragma('synchronous = NORMAL');
 db.pragma('busy_timeout = 5000');
 
-// ──────────────────────────────────────────────
-// SCHEMA
-// ──────────────────────────────────────────────
+// ── SCHEMA ───────────────────────────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id         TEXT PRIMARY KEY,
@@ -94,7 +92,7 @@ db.exec(`
     logo       TEXT DEFAULT ''
   );
 
-  -- ── Data-safety infrastructure (Phase 0) ─────────────────────────────────
+  -- ── Data-safety infrastructure (Phase 0) ───────────────────────────────
   CREATE TABLE IF NOT EXISTS schema_versions (
     version     INTEGER PRIMARY KEY,
     description TEXT NOT NULL,
@@ -122,18 +120,73 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS backup_runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     at          TEXT NOT NULL DEFAULT (datetime('now')),
-    tier        TEXT NOT NULL,      -- 'r2' | 'b2' | 'local'
+    tier        TEXT NOT NULL,
     bytes       INTEGER,
-    ok          INTEGER NOT NULL,   -- 1 = success, 0 = failure
+    ok          INTEGER NOT NULL,
     error       TEXT,
     duration_ms INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_backup_runs_at ON backup_runs(at DESC);
+
+  -- ── Phase 1.1: Vendors + Purchase Orders ───────────────────────────────
+  -- Vendors are SHARED across stores.
+  CREATE TABLE IF NOT EXISTS vendors (
+    id                TEXT PRIMARY KEY,
+    name              TEXT NOT NULL,
+    contact_name      TEXT,
+    contact_phone     TEXT,
+    contact_email     TEXT,
+    address           TEXT,
+    lead_time_days    INTEGER DEFAULT 7,
+    doa_window_days   INTEGER DEFAULT 30,
+    payment_terms     TEXT,
+    notes             TEXT,
+    created_at        TEXT DEFAULT (datetime('now')),
+    updated_at        TEXT DEFAULT (datetime('now')),
+    deleted_at        TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_vendors_deleted ON vendors(deleted_at);
+  CREATE INDEX IF NOT EXISTS idx_vendors_name    ON vendors(name);
+
+  -- Purchase Orders are STORE-SCOPED. You order for Sylvania or Holland.
+  CREATE TABLE IF NOT EXISTS purchase_orders (
+    id                 TEXT PRIMARY KEY,
+    store_id           TEXT NOT NULL DEFAULT 'sylvania',
+    vendor_id          TEXT,
+    status             TEXT NOT NULL DEFAULT 'draft'
+                         CHECK(status IN ('draft','sent','partially_received','received','closed','cancelled')),
+    reference          TEXT,
+    expected_date      TEXT,
+    notes              TEXT,
+    created_at         TEXT DEFAULT (datetime('now')),
+    created_by_user_id TEXT,
+    created_by_name    TEXT,
+    sent_at            TEXT,
+    closed_at          TEXT,
+    deleted_at         TEXT,
+    FOREIGN KEY (vendor_id)          REFERENCES vendors(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by_user_id) REFERENCES users(id)   ON DELETE SET NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_po_store_status ON purchase_orders(store_id, status);
+  CREATE INDEX IF NOT EXISTS idx_po_vendor       ON purchase_orders(vendor_id);
+  CREATE INDEX IF NOT EXISTS idx_po_created      ON purchase_orders(created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS po_lines (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    po_id             TEXT NOT NULL,
+    product_id        TEXT,
+    product_name      TEXT NOT NULL,
+    qty_ordered       INTEGER NOT NULL,
+    qty_received      INTEGER NOT NULL DEFAULT 0,
+    unit_cost_cents   INTEGER,
+    notes             TEXT,
+    FOREIGN KEY (po_id)      REFERENCES purchase_orders(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id)        ON DELETE SET NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_po_lines_po ON po_lines(po_id);
 `);
 
-// ──────────────────────────────────────────────
-// MIGRATIONS  (safe to run on existing DBs)
-// ──────────────────────────────────────────────
+// ── MIGRATIONS (safe to run on existing DBs) ─────────────────────────────────
 function addColIfMissing(table, col, def) {
   const cols = db.pragma(`table_info(${table})`).map(c => c.name);
   if (!cols.includes(col)) {
@@ -148,8 +201,7 @@ addColIfMissing('customers', 'notes', "TEXT DEFAULT ''");
 addColIfMissing('orders', 'voided_by_user_id', "TEXT");
 addColIfMissing('orders', 'voided_by_name', "TEXT");
 
-// Phase 0 — soft-delete columns on all user-data tables.
-// Reads continue to work unchanged (deleted_at IS NULL filter is added in routes).
+// Phase 0 — soft-delete columns
 addColIfMissing('customers', 'deleted_at', "TEXT");
 addColIfMissing('products',  'deleted_at', "TEXT");
 addColIfMissing('orders',    'deleted_at', "TEXT");
@@ -162,9 +214,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_users_deleted     ON users(deleted_at);
 `);
 
-// receipt_settings: old schema used  id INTEGER PRIMARY KEY  (single row).
-// New schema uses  store_id TEXT PRIMARY KEY  (one row per store).
-// Detect old schema and migrate.
+// receipt_settings migration (from Phase 0 patch)
 const rsInfo = db.pragma('table_info(receipt_settings)');
 const rsHasStoreId = rsInfo.some(c => c.name === 'store_id' && c.pk === 1);
 if (!rsHasStoreId) {
@@ -190,17 +240,15 @@ if (!rsHasStoreId) {
   console.log('[DB] Migrated receipt_settings to per-store schema');
 }
 
-// Record the Phase-0 migration so we have a record it was applied.
+// Record migrations
 const recordMigration = db.prepare(
   `INSERT OR IGNORE INTO schema_versions (version, description) VALUES (?, ?)`
 );
 recordMigration.run(1, 'Phase 0: audit_log, backup_runs, schema_versions, soft-delete columns');
+recordMigration.run(2, 'Phase 1.1: vendors, purchase_orders, po_lines tables');
 
-// ──────────────────────────────────────────────
-// SEED  (only if tables are empty)
-// ──────────────────────────────────────────────
+// ── SEED (only if tables are empty) ──────────────────────────────────────────
 function seed() {
-  // Receipt settings — one row per store
   for (const sid of ['sylvania', 'holland']) {
     if (!db.prepare('SELECT store_id FROM receipt_settings WHERE store_id = ?').get(sid)) {
       const name = sid.charAt(0).toUpperCase() + sid.slice(1) + ' LoonePOS';
@@ -211,7 +259,6 @@ function seed() {
     }
   }
 
-  // Users — shared across stores
   if (!db.prepare('SELECT COUNT(*) as c FROM users').get().c) {
     const ins = db.prepare(
       `INSERT INTO users (id, name, role, pin_hash, color, initials) VALUES (?,?,?,?,?,?)`
@@ -225,7 +272,6 @@ function seed() {
     console.log('[DB] Seeded default users (Admin:0000, Alex:1234, Sam:5678)');
   }
 
-  // Products — seed separately for each store
   for (const sid of ['sylvania', 'holland']) {
     if (!db.prepare('SELECT COUNT(*) as c FROM products WHERE store_id = ?').get(sid).c) {
       const ins = db.prepare(
