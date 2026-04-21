@@ -12,7 +12,6 @@ const allowedOrigins = (process.env.CORS_ORIGINS || '')
 
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow requests with no origin (mobile apps, curl, Postman)
     if (!origin) return cb(null, true);
     if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
       return cb(null, true);
@@ -23,7 +22,7 @@ app.use(cors({
 }));
 
 // ── Body parsing ─────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '5mb' }));   // 5 MB to allow base64 logo uploads
+app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // ── Request logger (dev) ─────────────────────────────────────────────────────
@@ -34,22 +33,18 @@ app.use((req, _res, next) => {
   next();
 });
 
-// ── Health checks ────────────────────────────────────────────────────────────
+// ── Health checks ───────────────────────────────────────────────────────────
 const { backupHealth, runBackup, isConfigured } = require('./db/backup');
 const { requireAuth, requireAdmin } = require('./middleware/auth');
 
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.0.0' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.1.0' }));
 
-// Returns 200 if most recent successful backup was within 26 hours, 500 otherwise.
-// Point UptimeRobot at this URL to get paged when nightly backups fail.
 app.get('/health/backups', (_req, res) => {
   const h = backupHealth();
   if (!h.healthy) return res.status(500).json(h);
   res.json(h);
 });
 
-// Admin-only: run a backup right now. Useful to prove the pipeline works
-// after first deploy without waiting for 02:00.
 app.post('/api/admin/backup/run', requireAuth, requireAdmin, async (_req, res) => {
   if (!isConfigured()) {
     return res.status(412).json({ error: 'Backup not configured — env vars missing' });
@@ -58,14 +53,17 @@ app.post('/api/admin/backup/run', requireAuth, requireAdmin, async (_req, res) =
   res.status(result.ok ? 200 : 500).json(result);
 });
 
-// ── API Routes ───────────────────────────────────────────────────────────────
-app.use('/api/auth',      require('./routes/auth'));
-app.use('/api/users',     require('./routes/users'));
-app.use('/api/products',  require('./routes/products'));
-app.use('/api/customers', require('./routes/customers'));
-app.use('/api/orders',    require('./routes/orders'));
-app.use('/api/reports',   require('./routes/reports'));
-app.use('/api/settings',  require('./routes/settings'));
+// ── API Routes ──────────────────────────────────────────────────────────────────
+app.use('/api/auth',             require('./routes/auth'));
+app.use('/api/users',            require('./routes/users'));
+app.use('/api/products',         require('./routes/products'));
+app.use('/api/customers',        require('./routes/customers'));
+app.use('/api/orders',           require('./routes/orders'));
+app.use('/api/reports',          require('./routes/reports'));
+app.use('/api/settings',         require('./routes/settings'));
+// Phase 1.1:
+app.use('/api/vendors',          require('./routes/vendors'));
+app.use('/api/purchase-orders',  require('./routes/purchaseOrders'));
 
 // ── 404 handler ──────────────────────────────────────────────────────────────
 app.use((req, res) => res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` }));
@@ -86,7 +84,6 @@ app.listen(PORT, () => {
   console.log(`  Database:  ${process.env.DB_PATH || './data/loonepos.db'}`);
   console.log(`  CORS:      ${allowedOrigins.length ? allowedOrigins.join(', ') : 'all origins (open)'}\n`);
 
-  // Schedule nightly R2 backup (no-op when env vars absent).
   const { scheduleBackups } = require('./db/backup');
   scheduleBackups();
 });
