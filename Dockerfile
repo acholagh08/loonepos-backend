@@ -22,6 +22,5 @@ EXPOSE 3001
 # Non-root user for security
 RUN addgroup -S loonepos && adduser -S loonepos -G loonepos
 RUN chown -R loonepos:loonepos /app
-USER loonepos
 
 CMD ["node", "server.js"]
